@@ -30,9 +30,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.jboss.netty.channel.Channel;
@@ -45,8 +45,11 @@ import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.kaazing.k3po.driver.internal.Robot;
+import org.kaazing.k3po.driver.internal.control.AwaitMessage;
 import org.kaazing.k3po.driver.internal.control.ErrorMessage;
 import org.kaazing.k3po.driver.internal.control.FinishedMessage;
+import org.kaazing.k3po.driver.internal.control.NotifiedMessage;
+import org.kaazing.k3po.driver.internal.control.NotifyMessage;
 import org.kaazing.k3po.driver.internal.control.PrepareMessage;
 import org.kaazing.k3po.driver.internal.control.PreparedMessage;
 import org.kaazing.k3po.driver.internal.control.StartedMessage;
@@ -114,14 +117,16 @@ public class ControlServerHandler extends ControlUpstreamHandler {
                 ClassLoader contextClassLoader = currentThread.getContextClassLoader();
                 try {
                     currentThread.setContextClassLoader(scriptLoader);
-                    prepareFuture = robot.prepare(aggregatedScript.toString());
+                    prepareFuture =
+                            robot.prepare(aggregatedScript.toString());
                 }
                 finally {
                     currentThread.setContextClassLoader(contextClassLoader);
                 }
             }
             else {
-                prepareFuture = robot.prepare(aggregatedScript.toString());
+                prepareFuture =
+                        robot.prepare(aggregatedScript.toString());
             }
 
             prepareFuture.addListener(new ChannelFutureListener() {
@@ -129,6 +134,7 @@ public class ControlServerHandler extends ControlUpstreamHandler {
                 public void operationComplete(final ChannelFuture f) {
                     PreparedMessage prepared = new PreparedMessage();
                     prepared.setScript(aggregatedScript);
+                    prepared.getBarriers().addAll(robot.getBarriersByName().keySet());
                     Channels.write(ctx, Channels.future(null), prepared);
                 }
             });
@@ -143,13 +149,9 @@ public class ControlServerHandler extends ControlUpstreamHandler {
      */
     public static String aggregateScript(List<String> scriptNames, ClassLoader scriptLoader) throws URISyntaxException,
             IOException {
-        List<String> scriptNamesWithExtension = new LinkedList<>();
         final StringBuilder aggregatedScript = new StringBuilder();
         for (String scriptName : scriptNames) {
             String scriptNameWithExtension = format("%s.rpt", scriptName);
-            scriptNamesWithExtension.add(scriptNameWithExtension);
-        }
-        for (String scriptNameWithExtension : scriptNamesWithExtension) {
             Path scriptPath = Paths.get(scriptNameWithExtension);
             String script = null;
 
@@ -229,6 +231,43 @@ public class ControlServerHandler extends ControlUpstreamHandler {
         robot.abort().addListener(whenAbortedOrFinished);
     }
 
+    @Override
+    public void notifyReceived(final ChannelHandlerContext ctx, MessageEvent evt) throws Exception {
+        NotifyMessage notifyMessage = (NotifyMessage) evt.getMessage();
+        final String barrier = notifyMessage.getBarrier();
+        if (logger.isDebugEnabled()) {
+            logger.debug("NOTIFY: " + barrier);
+        }
+        robot.notifyBarrier(barrier);
+        final NotifiedMessage notifiedMessaged = new NotifiedMessage();
+        notifiedMessaged.setBarrier(barrier);
+        logger.debug("sending NOTIFIED: " + barrier);
+        ChannelFuture pendingNotify = ctx.getChannel().write(notifiedMessaged);
+        pendingWrites.add(pendingNotify);
+    }
+
+    CopyOnWriteArrayList<ChannelFuture> pendingWrites = new CopyOnWriteArrayList<>();
+
+    @Override
+    public void awaitReceived(final ChannelHandlerContext ctx, MessageEvent evt) throws Exception {
+        AwaitMessage awaitMessage = (AwaitMessage) evt.getMessage();
+        final String barrier = awaitMessage.getBarrier();
+        if (logger.isDebugEnabled()) {
+            logger.debug("AWAIT: " + barrier);
+        }
+        robot.awaitBarrier(barrier).addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                if (future.isSuccess()) {
+                    logger.debug("sending NOTIFIED: " + barrier);
+                    final NotifiedMessage notified = new NotifiedMessage();
+                    notified.setBarrier(barrier);
+                    Channels.write(ctx, Channels.future(null), notified);
+                }
+            }
+        });
+    }
+
     private ChannelFutureListener whenAbortedOrFinished(final ChannelHandlerContext ctx) {
         final AtomicBoolean latch = new AtomicBoolean();
         return new ChannelFutureListener() {
@@ -248,6 +287,14 @@ public class ControlServerHandler extends ControlUpstreamHandler {
 
         FinishedMessage finished = new FinishedMessage();
         finished.setScript(observedScript);
+        for (ChannelFuture pendingWrite : pendingWrites) {
+            try {
+                pendingWrite.await(100);
+            } catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+        }
         channel.write(finished);
     }
 

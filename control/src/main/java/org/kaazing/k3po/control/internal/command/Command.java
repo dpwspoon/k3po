@@ -45,7 +45,15 @@ public abstract class Command {
         /**
          * Abort command.
          */
-        ABORT
+        ABORT,
+        /**
+         * Await command.
+         */
+        AWAIT,
+        /**
+         * Notify command.
+         */
+        NOTIFY
     }
 
     /**

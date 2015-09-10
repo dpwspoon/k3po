@@ -30,6 +30,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelFuture;
@@ -54,7 +55,9 @@ import org.kaazing.k3po.driver.internal.behavior.ScriptProgress;
 import org.kaazing.k3po.driver.internal.behavior.ScriptProgressException;
 import org.kaazing.k3po.driver.internal.behavior.handler.CompletionHandler;
 import org.kaazing.k3po.driver.internal.behavior.parser.Parser;
+import org.kaazing.k3po.driver.internal.behavior.parser.ScriptValidator;
 import org.kaazing.k3po.driver.internal.behavior.visitor.GenerateConfigurationVisitor;
+import org.kaazing.k3po.driver.internal.behavior.visitor.GenerateConfigurationVisitor.State;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.BootstrapFactory;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.ClientBootstrap;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.ServerBootstrap;
@@ -92,6 +95,8 @@ public class Robot {
     private ScriptProgress progress;
 
     private final ChannelHandler closeOnExceptionHandler = new CloseOnExceptionHandler();
+
+    private Map<String, Barrier> barriersByName;
 
     // tests
     public Robot() {
@@ -138,6 +143,9 @@ public class Robot {
         final ScriptParser parser = new Parser();
         AstScriptNode scriptAST = parser.parse(new ByteArrayInputStream(expectedScript.getBytes(UTF_8)));
 
+        final ScriptValidator validator = new ScriptValidator();
+        validator.validate(scriptAST);
+
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug("Parsed script:\n" + scriptAST);
         }
@@ -146,14 +154,17 @@ public class Robot {
         progress = new ScriptProgress(scriptInfo, expectedScript);
 
         final GenerateConfigurationVisitor visitor = new GenerateConfigurationVisitor(bootstrapFactory, addressFactory);
-        configuration = scriptAST.accept(visitor, new GenerateConfigurationVisitor.State());
+        State gcvState = new GenerateConfigurationVisitor.State();
+        configuration = scriptAST.accept(visitor, gcvState);
+        this.barriersByName = gcvState.getBarriersByName();
 
         preparedFuture = prepareConfiguration();
 
         return preparedFuture;
     }
 
-    public ChannelFuture prepareAndStart(String script) throws Exception {
+    // ONLY used for testing, TODO, remove and use TestSpecification instead
+    ChannelFuture prepareAndStart(String script) throws Exception {
         ChannelFuture preparedFuture = prepare(script);
         preparedFuture.addListener(new ChannelFutureListener() {
             @Override
@@ -525,6 +536,26 @@ public class Robot {
                 super.exceptionCaught(ctx, e);
             }
         }
+    }
+
+    public Map<String, Barrier> getBarriersByName() {
+        return barriersByName;
+    }
+
+    public void notifyBarrier(String barrierName) throws Exception {
+        final Barrier barrier = barriersByName.get(barrierName);
+        if (barrier == null) {
+            throw new Exception("Can not notify nonexistant barrier: " + barrierName);
+        }
+        barrier.getFuture().setSuccess();
+    }
+
+    public ChannelFuture awaitBarrier(String barrierName) throws Exception {
+        final Barrier barrier = barriersByName.get(barrierName);
+        if (barrier == null) {
+            throw new Exception("Can not await nonexistant barrier: " + barrierName);
+        }
+        return barrier.getFuture();
     }
 
 }

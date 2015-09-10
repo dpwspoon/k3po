@@ -205,6 +205,11 @@ public class GenerateConfigurationVisitor implements AstNode.Visitor<Configurati
                 return pipeline;
             }
         }
+
+        public Map<String, Barrier> getBarriersByName() {
+            return barriersByName;
+        }
+
     }
 
     public GenerateConfigurationVisitor(BootstrapFactory bootstrapFactory, ChannelAddressFactory addressFactory) {

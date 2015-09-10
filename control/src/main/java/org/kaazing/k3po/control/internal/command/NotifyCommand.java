@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2007-2014 Kaazing Corporation. All rights reserved.
  *
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -19,10 +19,39 @@
  * under the License.
  */
 
-/**
- *  Test to validate behavior as specified in <a href="https://tools.ietf.org/html/rfc7232">RFC 7232:
- *   Hypertext Transfer Protocol (HTTP/1.1): Conditional Requests</a>.
- */
-package org.kaazing.specification.http.rfc7232;
+package org.kaazing.k3po.control.internal.command;
 
-// TODO
+import static org.kaazing.k3po.control.internal.command.Command.Kind.NOTIFY;
+
+import java.util.Objects;
+
+public class NotifyCommand extends Command {
+    private String barrier;
+
+    @Override
+    public Kind getKind() {
+        return NOTIFY;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(getKind());
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        return o == this || o instanceof AwaitCommand && equalTo((AwaitCommand) o);
+    }
+
+    protected boolean equalTo(NotifyCommand that) {
+        return super.equalTo(that) && Objects.equals(this.getBarrier(), that.getBarrier());
+    }
+
+    public String getBarrier() {
+        return barrier;
+    }
+
+    public void setBarrier(String barrier) {
+        this.barrier = barrier;
+    }
+}
