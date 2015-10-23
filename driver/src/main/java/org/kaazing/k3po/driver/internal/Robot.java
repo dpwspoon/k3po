@@ -29,10 +29,8 @@ import java.io.ByteArrayInputStream;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -47,8 +45,6 @@ import org.jboss.netty.channel.Channels;
 import org.jboss.netty.channel.ChildChannelStateEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.SimpleChannelHandler;
-import org.jboss.netty.channel.group.ChannelGroupFuture;
-import org.jboss.netty.channel.group.ChannelGroupFutureListener;
 import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.local.DefaultLocalClientChannelFactory;
 import org.jboss.netty.logging.InternalLogger;
@@ -61,7 +57,6 @@ import org.kaazing.k3po.driver.internal.behavior.handler.CompletionHandler;
 import org.kaazing.k3po.driver.internal.behavior.parser.Parser;
 import org.kaazing.k3po.driver.internal.behavior.parser.ScriptValidator;
 import org.kaazing.k3po.driver.internal.behavior.visitor.GenerateConfigurationVisitor;
-import org.kaazing.k3po.driver.internal.behavior.visitor.GenerateConfigurationVisitor.State;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.BootstrapFactory;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.ClientBootstrap;
 import org.kaazing.k3po.driver.internal.netty.bootstrap.ServerBootstrap;
@@ -84,17 +79,16 @@ public class Robot {
     private final ChannelFuture startedFuture = Channels.future(channel);
     private final ChannelFuture abortedFuture = Channels.future(channel);
     private final ChannelFuture finishedFuture = Channels.future(channel);
+    private final ChannelFuture disposedFuture = Channels.future(channel);
 
     private final DefaultChannelGroup serverChannels = new DefaultChannelGroup();
     private final DefaultChannelGroup clientChannels = new DefaultChannelGroup();
 
     private Configuration configuration;
     private ChannelFuture preparedFuture;
-    private volatile boolean destroyed;
 
     private final ChannelAddressFactory addressFactory;
     private final BootstrapFactory bootstrapFactory;
-    private final boolean createdBootstrapFactory;
 
     private ScriptProgress progress;
 
@@ -102,24 +96,10 @@ public class Robot {
 
     private final ConcurrentMap<String, Barrier> barriersByName = new ConcurrentHashMap<String, Barrier>();
 
-    // tests
     public Robot() {
-        this(newChannelAddressFactory());
-    }
-
-    private Robot(ChannelAddressFactory addressFactory) {
-        this(addressFactory,
-             newBootstrapFactory(Collections.<Class<?>, Object>singletonMap(ChannelAddressFactory.class, addressFactory)), true);
-    }
-
-    private Robot(
-            ChannelAddressFactory addressFactory,
-            BootstrapFactory bootstrapFactory,
-            boolean createdBootstrapFactory) {
-
-        this.addressFactory = addressFactory;
-        this.bootstrapFactory = bootstrapFactory;
-        this.createdBootstrapFactory = createdBootstrapFactory;
+        this.addressFactory = newChannelAddressFactory();
+        this.bootstrapFactory =
+                newBootstrapFactory(Collections.<Class<?>, Object>singletonMap(ChannelAddressFactory.class, addressFactory));
 
         ChannelFutureListener stopConfigurationListener = createStopConfigurationListener();
         this.abortedFuture.addListener(stopConfigurationListener);
@@ -218,32 +198,35 @@ public class Robot {
         return (progress != null) ? progress.getObservedScript() : null;
     }
 
-    public boolean isDestroyed() {
-        return destroyed;
-    }
+    public ChannelFuture dispose() {
+        if (preparedFuture == null) {
+            // no need to clean up if never started
+            disposedFuture.setSuccess();
+        } else if (!disposedFuture.isDone()) {
+            ChannelFuture future = abort();
+            future.addListener(new ChannelFutureListener() {
 
-    public boolean destroy() {
+                @Override
+                public void operationComplete(ChannelFuture future) throws Exception {
+                    // close server and client channels
+                    // final ChannelGroupFuture closeFuture =
+                    serverChannels.close();
+                    clientChannels.close();
 
-        if (destroyed) {
-            return true;
-        }
-
-        abort();
-
-        if (createdBootstrapFactory) {
-            try {
-                bootstrapFactory.shutdown();
-                bootstrapFactory.releaseExternalResources();
-            }
-            catch (Exception e) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("Caught exception releasing resources", e);
+                    try {
+                        bootstrapFactory.shutdown();
+                        bootstrapFactory.releaseExternalResources();
+                    } catch (Exception e) {
+                        if (LOGGER.isDebugEnabled()) {
+                            LOGGER.debug("Caught exception releasing resources", e);
+                        }
+                    } finally {
+                        disposedFuture.setSuccess();
+                    }
                 }
-                return false;
-            }
+            });
         }
-
-        return destroyed = true;
+        return disposedFuture;
     }
 
     private ChannelFuture prepareConfiguration() throws Exception {
@@ -377,15 +360,6 @@ public class Robot {
             for (ChannelFuture connectFuture : connectFutures) {
                 connectFuture.cancel();
             }
-
-            // close server and client channels
-            final ChannelGroupFuture closeFuture = serverChannels.close();
-            closeFuture.addListener(new ChannelGroupFutureListener() {
-                @Override
-                public void operationComplete(final ChannelGroupFuture future) {
-                    clientChannels.close();
-                }
-            });
         }
     }
 
